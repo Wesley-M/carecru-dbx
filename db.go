@@ -29,6 +29,82 @@ const (
 	defaultAPI = "http://localhost:8000/db?q="
 )
 
+// Config holds application configuration
+type Config struct {
+	ScrollAcceleration    int `json:"scroll_acceleration"`     // Rows to skip when holding arrow keys
+	ScrollRepeatThreshold int `json:"scroll_repeat_threshold"` // Number of repeats before acceleration kicks in
+	ScrollRepeatTimeoutMs int `json:"scroll_repeat_timeout_ms"` // Milliseconds to detect key repeat
+	PageScrollStep        int `json:"page_scroll_step"`        // Rows to jump for Page Up/Down
+	MaxHistoryEntries     int `json:"max_history_entries"`     // Maximum number of history entries to keep
+	ConnectionCheckSec    int `json:"connection_check_sec"`    // Seconds between connection status checks
+	MaxColumnWidth        int `json:"max_column_width"`        // Maximum width for table columns
+}
+
+// DefaultConfig returns the default configuration
+func DefaultConfig() Config {
+	return Config{
+		ScrollAcceleration:    3,
+		ScrollRepeatThreshold: 3,
+		ScrollRepeatTimeoutMs: 150,
+		PageScrollStep:        10,
+		MaxHistoryEntries:     200,
+		ConnectionCheckSec:    5,
+		MaxColumnWidth:        40,
+	}
+}
+
+func configPath() (string, error) {
+	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
+		return filepath.Join(env, "dbx", "config.json"), nil
+	}
+	usr, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(usr.HomeDir, ".config", "dbx", "config.json"), nil
+}
+
+func loadConfig() (*Config, error) {
+	p, err := configPath()
+	if err != nil {
+		cfg := DefaultConfig()
+		return &cfg, nil
+	}
+	b, err := ioutil.ReadFile(p)
+	if os.IsNotExist(err) {
+		// Create default config file
+		cfg := DefaultConfig()
+		saveConfig(&cfg)
+		return &cfg, nil
+	}
+	if err != nil {
+		cfg := DefaultConfig()
+		return &cfg, nil
+	}
+	var cfg Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		// If corrupted, return default config
+		defCfg := DefaultConfig()
+		return &defCfg, nil
+	}
+	return &cfg, nil
+}
+
+func saveConfig(cfg *Config) error {
+	p, err := configPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(p, b, 0o644)
+}
+
 // HistoryEntry stores a query and timestamp
 type HistoryEntry struct {
 	Query     string    `json:"query"`
@@ -141,7 +217,7 @@ func truncateString(s string, maxLen int) string {
 }
 
 // renderJSONToTable converts a slice of maps into columns and rows with smart column widths
-func renderJSONToTable(data []map[string]interface{}, table *tview.Table, columns *[]string) {
+func renderJSONToTable(data []map[string]interface{}, table *tview.Table, columns *[]string, cfg *Config) {
 	table.Clear()
 	if len(data) == 0 {
 		return
@@ -156,7 +232,7 @@ func renderJSONToTable(data []map[string]interface{}, table *tview.Table, column
 	*columns = cols
 	
 	// Calculate max widths for each column (limit to reasonable sizes)
-	const maxColWidth = 40
+	maxColWidth := cfg.MaxColumnWidth
 	const minColWidth = 8
 	colWidths := make(map[string]int)
 	for _, k := range cols {
@@ -199,6 +275,14 @@ func renderJSONToTable(data []map[string]interface{}, table *tview.Table, column
 }
 
 func main() {
+	// Load configuration
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load config, using defaults: %v\n", err)
+		defCfg := DefaultConfig()
+		cfg = &defCfg
+	}
+
 	// Check for command-line query argument
 	if len(os.Args) > 1 {
 		// Show usage hint if no valid query detected
@@ -262,11 +346,76 @@ func main() {
 	// use an input capture on the page to accept typed text into the query area
 
 	editor := tview.NewTextArea()
-	editor.SetPlaceholder("Enter SQL, press Enter to run (Shift-Enter for newline)")
+	editor.SetPlaceholder("Enter SQL, press Enter to run")
 	editor.SetBorder(true).SetTitle("Editor")
 
 	resultsTable := tview.NewTable().SetFixed(1, 0).SetSelectable(true, true)
 	resultsTable.SetBorder(true).SetTitle("Results")
+	
+	// Variables for tracking key repeat for faster scrolling
+	var lastKeyTime time.Time
+	var lastKey tcell.Key
+	var keyRepeatCount int
+	
+	// Add faster scrolling for results table with acceleration
+	resultsTable.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		row, col := resultsTable.GetSelection()
+		rowCount := resultsTable.GetRowCount()
+		
+		now := time.Now()
+		
+		switch event.Key() {
+		case tcell.KeyPgDn:
+			// Jump down by configured page step
+			newRow := row + cfg.PageScrollStep
+			if newRow >= rowCount {
+				newRow = rowCount - 1
+			}
+			resultsTable.Select(newRow, col)
+			return nil
+		case tcell.KeyPgUp:
+			// Jump up by configured page step
+			newRow := row - cfg.PageScrollStep
+			if newRow < 1 { // Skip header row (row 0)
+				newRow = 1
+			}
+			resultsTable.Select(newRow, col)
+			return nil
+		case tcell.KeyDown, tcell.KeyUp:
+			// Detect key repeat: if same key pressed within configured timeout, it's a repeat
+			isRepeat := false
+			if event.Key() == lastKey && now.Sub(lastKeyTime) < time.Duration(cfg.ScrollRepeatTimeoutMs)*time.Millisecond {
+				keyRepeatCount++
+				isRepeat = true
+			} else {
+				keyRepeatCount = 0
+			}
+			lastKey = event.Key()
+			lastKeyTime = now
+			
+			// Calculate scroll step: start with 1, accelerate after threshold
+			step := 1
+			if isRepeat && keyRepeatCount > cfg.ScrollRepeatThreshold {
+				step = cfg.ScrollAcceleration
+			}
+			
+			var newRow int
+			if event.Key() == tcell.KeyDown {
+				newRow = row + step
+				if newRow >= rowCount {
+					newRow = rowCount - 1
+				}
+			} else {
+				newRow = row - step
+				if newRow < 1 {
+					newRow = 1
+				}
+			}
+			resultsTable.Select(newRow, col)
+			return nil
+		}
+		return event
+	})
 
 	detailView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWordWrap(true)
 	detailView.SetBorder(true).SetTitle("Detail")
@@ -470,7 +619,7 @@ func main() {
 			})
 			
 			// Re-render table
-			renderJSONToTable(currentData, resultsTable, &currentColumns)
+			renderJSONToTable(currentData, resultsTable, &currentColumns, cfg)
 			resultsTable.SetTitle(fmt.Sprintf("Results (%d rows) [sorted by %s %s]", len(currentData), colName, map[bool]string{true: "↑", false: "↓"}[sortAscending]))
 			resultsTable.Select(1, 0)
 			updateDetailView()
@@ -483,7 +632,7 @@ func main() {
 		sortAscending = true
 
 		// Auto-save to history
-		appendHistory(hist, query, 200)
+		appendHistory(hist, query, cfg.MaxHistoryEntries)
 		if err := saveHistory(hist); err != nil {
 			setStatus("[red]Failed to save history: %v", err)
 		} else {
@@ -515,7 +664,7 @@ func main() {
 					switch v := res.(type) {
 				case []map[string]interface{}:
 					currentData = v
-					renderJSONToTable(v, resultsTable, &currentColumns)
+					renderJSONToTable(v, resultsTable, &currentColumns, cfg)
 					currentRowCount = len(v)
 					resultsTable.SetTitle(fmt.Sprintf("Results (%d rows)", currentRowCount))
 					if currentRowCount > 0 {
@@ -538,7 +687,7 @@ func main() {
 						}
 					if len(maps) > 0 {
 						currentData = maps
-						renderJSONToTable(maps, resultsTable, &currentColumns)
+						renderJSONToTable(maps, resultsTable, &currentColumns, cfg)
 						currentRowCount = len(maps)
 						resultsTable.SetTitle(fmt.Sprintf("Results (%d rows)", currentRowCount))
 						resultsTable.Select(1, 0)
@@ -587,51 +736,12 @@ func main() {
 					connectionStatus.SetText("[red]●[white] Disconnected")
 				}
 			})
-			time.Sleep(5 * time.Second)
+			time.Sleep(time.Duration(cfg.ConnectionCheckSec) * time.Second)
 		}
 	}()
 
 	// keybindings
 	app.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
-		// Shift+? for help
-		if ev.Rune() == '?' && ev.Modifiers() == tcell.ModShift {
-			helpText := `[yellow]Keyboard Shortcuts:[white]
-
-[yellow]Query Execution:[white]
-  Enter          Run query
-  Shift-Enter    New line in editor
-  Ctrl-S         Save query to history
-
-[yellow]Navigation:[white]
-  Tab            Cycle through panes
-  Arrow Keys     Navigate within panes
-  
-[yellow]History:[white]
-  D              Delete selected history entry
-  Click/Enter    Load query into editor
-
-[yellow]Results:[white]
-  Click Header   Sort by column
-  Ctrl-E         Export results to JSON
-
-[yellow]Other:[white]
-  Shift-?        Show this help
-  Ctrl-Q         Quit
-
-[gray]Press any key to close`
-			
-			modal := tview.NewModal().
-				SetText(helpText).
-				AddButtons([]string{"Close"}).
-				SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-					app.SetRoot(flex, true)
-					app.SetFocus(editor)
-				})
-			
-			app.SetRoot(modal, true)
-			return nil
-		}
-
 		// Ctrl-E to export results
 		if ev.Modifiers() == tcell.ModCtrl && ev.Rune() == 'e' {
 			if len(currentData) > 0 {
@@ -669,22 +779,10 @@ func main() {
 			return nil
 		}
 
-		// Enter to run query from editor (TextArea handles Shift-Enter for newlines)
+		// Enter to run query from editor (auto-saves to history)
 		if ev.Key() == tcell.KeyEnter && app.GetFocus() == editor {
 			q := editor.GetText()
 			runQuery(q)
-			return nil
-		}
-		// Ctrl-S to save query to history
-		if ev.Modifiers() == tcell.ModCtrl && ev.Rune() == 's' {
-			q := editor.GetText()
-			appendHistory(hist, q, 200)
-			if err := saveHistory(hist); err != nil {
-				setStatus("[red]Failed to save history: %v", err)
-			} else {
-				refreshHistoryList()
-				setStatus("[green]Saved to history")
-			}
 			return nil
 		}
 		// Ctrl-Q to quit
@@ -696,7 +794,7 @@ func main() {
 	})
 
 	// small help text
-	help := "[yellow]Shortcuts:[white] Enter Run  Shift-Enter Newline  Tab Cycle  D Delete  Ctrl-S Save  Ctrl-Q Quit"
+	help := "[yellow]Shortcuts:[white] Enter Run  Tab Cycle  D Delete  Ctrl-E Export  Ctrl-Q Quit"
 	setStatus(help)
 
 	// start app
