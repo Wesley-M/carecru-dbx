@@ -573,6 +573,7 @@ func main() {
 		for k := range rowData {
 			keys = append(keys, k)
 		}
+		sort.Strings(keys)
 		
 		for _, k := range keys {
 			v := rowData[k]
