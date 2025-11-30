@@ -336,6 +336,9 @@ func main() {
 	// UI components
 	historyList := tview.NewList().ShowSecondaryText(false)
 	historyList.SetBorder(true).SetTitle("History")
+	
+	// Declare updateFocusColors early so we can use it in mouse handlers
+	var updateFocusColors func(tview.Primitive)
 
 	historyPreview := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWordWrap(true)
 	historyPreview.SetBorder(true).SetTitle("Preview")
@@ -429,6 +432,62 @@ func main() {
 
 	status := tview.NewTextView().SetDynamicColors(true)
 	status.SetBorder(false)
+	
+	// Function to update border colors based on focus
+	updateFocusColors = func(focused tview.Primitive) {
+		// Reset all borders to default color
+		historyList.SetBorderColor(tcell.ColorWhite)
+		editor.SetBorderColor(tcell.ColorWhite)
+		resultsTable.SetBorderColor(tcell.ColorWhite)
+		detailView.SetBorderColor(tcell.ColorWhite)
+		rawView.SetBorderColor(tcell.ColorWhite)
+		
+		// Highlight focused pane with green
+		switch focused {
+		case historyList:
+			historyList.SetBorderColor(tcell.ColorGreen)
+		case editor:
+			editor.SetBorderColor(tcell.ColorGreen)
+		case resultsTable:
+			resultsTable.SetBorderColor(tcell.ColorGreen)
+		case detailView:
+			detailView.SetBorderColor(tcell.ColorGreen)
+		case rawView:
+			rawView.SetBorderColor(tcell.ColorGreen)
+		}
+	}
+	
+	// Add mouse click handlers to update focus colors
+	historyList.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			updateFocusColors(historyList)
+		}
+		return action, event
+	})
+	editor.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			updateFocusColors(editor)
+		}
+		return action, event
+	})
+	resultsTable.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			updateFocusColors(resultsTable)
+		}
+		return action, event
+	})
+	detailView.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			updateFocusColors(detailView)
+		}
+		return action, event
+	})
+	rawView.SetMouseCapture(func(action tview.MouseAction, event *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action == tview.MouseLeftClick {
+			updateFocusColors(rawView)
+		}
+		return action, event
+	})
 
 	// layout
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
@@ -479,6 +538,7 @@ func main() {
 			historyList.AddItem(label, "", 0, func() {
 				editor.SetText(hist.Entries[idx].Query, true)
 				app.SetFocus(editor)
+				updateFocusColors(editor)
 			})
 			if i >= 100 {
 				break
@@ -765,18 +825,21 @@ func main() {
 
 		// Tab to cycle focus
 		if ev.Key() == tcell.KeyTab {
+			var nextFocus tview.Primitive
 			switch app.GetFocus() {
 			case editor:
-				app.SetFocus(historyList)
+				nextFocus = historyList
 			case historyList:
-				app.SetFocus(resultsTable)
+				nextFocus = resultsTable
 			case resultsTable:
-				app.SetFocus(detailView)
+				nextFocus = detailView
 			case detailView:
-				app.SetFocus(rawView)
+				nextFocus = rawView
 			default:
-				app.SetFocus(editor)
+				nextFocus = editor
 			}
+			app.SetFocus(nextFocus)
+			updateFocusColors(nextFocus)
 			return nil
 		}
 
@@ -800,6 +863,7 @@ func main() {
 
 	// start app
 	app.SetFocus(editor)
+	updateFocusColors(editor)
 	if err := app.SetRoot(flex, true).EnableMouse(true).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running app: %v\n", err)
 		os.Exit(1)

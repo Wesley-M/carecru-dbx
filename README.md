@@ -70,6 +70,8 @@ Execute a single query and output JSON:
 | Key | Action |
 |-----|--------|
 | `Click Header` | Sort by column (toggles asc/desc) |
+| `Arrow Keys` | Navigate by 1 row, or 3 rows when holding |
+| `Page Up/Down` | Jump by 10 rows (configurable) |
 | `Ctrl-E` | Export results to JSON file |
 
 ### Other
@@ -105,11 +107,36 @@ Execute a single query and output JSON:
 
 ## Configuration
 
+Configuration is stored in:
+- `$XDG_CONFIG_HOME/dbx/config.json`, or
+- `~/.config/dbx/config.json`
+
+A default configuration file is automatically created on first run. You can customize these settings:
+
+```json
+{
+  "scroll_acceleration": 3,
+  "scroll_repeat_threshold": 3,
+  "scroll_repeat_timeout_ms": 150,
+  "page_scroll_step": 10,
+  "max_history_entries": 200,
+  "connection_check_sec": 5,
+  "max_column_width": 40
+}
+```
+
+**Configuration Options:**
+- `scroll_acceleration`: Rows to skip when holding arrow keys
+- `scroll_repeat_threshold`: Number of key repeats before acceleration
+- `scroll_repeat_timeout_ms`: Milliseconds to detect key repeat
+- `page_scroll_step`: Rows to jump for Page Up/Down
+- `max_history_entries`: Maximum history entries to keep
+- `connection_check_sec`: Seconds between connection checks
+- `max_column_width`: Maximum width for table columns
+
 History is automatically stored in:
 - `$XDG_CONFIG_HOME/dbx/history.json`, or
 - `~/.config/dbx/history.json`
-
-The last 200 queries are kept by default.
 
 ## API Requirements
 
@@ -138,9 +165,17 @@ Example response format:
 
 ### Smart Column Display
 - Columns are sorted alphabetically for consistency
-- Column widths auto-adjust based on content (max 40 chars)
+- Column widths auto-adjust based on content (configurable max)
 - Long values are truncated with ellipsis (…)
 - Full values viewable in the Detail pane
+- Detail pane shows fields in alphabetical order
+
+### Scrolling
+Results table has adaptive scrolling:
+- Single key press: Move 1 row for precise control
+- Holding arrow key: Accelerates to 3 rows after a few repeats
+- Page Up/Down: Jump by 10 rows (configurable)
+- All scroll parameters can be customized in config.json
 
 ### Result Sorting
 Click any column header (or navigate with arrows and press Enter) to sort results. Click again to reverse the sort order. The title shows which column is sorted with an up (↑) or down (↓) arrow.
